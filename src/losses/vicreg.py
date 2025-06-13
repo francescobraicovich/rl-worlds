@@ -41,12 +41,30 @@ class VICRegLoss(nn.Module):
         return total_loss, sim_loss, std_loss, cov_loss
 
     def calculate_reg_terms(self, z):
+        if z.size(0) < 2:
+            # If batch size is less than 2, variance and covariance are undefined or unstable.
+            # Return zeros for all loss components.
+            # Ensure the zeros are on the same device as the input tensor.
+            zero_loss = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+            return zero_loss, zero_loss, zero_loss
+
+        # Original calculations follow
         z_std = torch.sqrt(z.var(dim=0) + self.eps)  # (D,)
         std_loss_val = torch.mean(F.relu(1 - z_std))  # Hinge loss
 
         z_centered = z - z.mean(dim=0)
+        # Ensure denominator is not zero for covariance calculation.
+        # The check z.size(0) < 2 already handles the z.size(0) - 1 == 0 case.
+        # However, if z.size(0) was exactly 1 and not caught, this would be an issue.
+        # The primary check is sufficient.
         cov_z = (z_centered.T @ z_centered) / (z.size(0) - 1)
-        cov_loss_val = (cov_z.fill_diagonal_(0).pow_(2).sum()) / z.size(1)
+
+        # Check for feature dimension being zero to prevent division by zero.
+        # This is highly unlikely for embeddings but good for robustness.
+        if z.size(1) == 0:
+            cov_loss_val = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+        else:
+            cov_loss_val = (cov_z.fill_diagonal_(0).pow_(2).sum()) / z.size(1)
 
         weighted_std_loss = self.std_coeff * std_loss_val
         weighted_cov_loss = self.cov_coeff * cov_loss_val

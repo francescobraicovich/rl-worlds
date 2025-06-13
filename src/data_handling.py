@@ -41,7 +41,8 @@ def prepare_dataloaders(config, validation_split):
         batch_size=config.get('batch_size', 32),
         shuffle=True,
         num_workers=config.get('num_workers', 4),
-        pin_memory=True
+        pin_memory=True,
+        drop_last=True
     )
 
     val_dataloader = None
@@ -51,7 +52,8 @@ def prepare_dataloaders(config, validation_split):
             batch_size=config.get('batch_size', 32),
             shuffle=False,
             num_workers=config.get('num_workers', 4),
-            pin_memory=True
+            pin_memory=True,
+            drop_last=True
         )
 
     return train_dataloader, val_dataloader

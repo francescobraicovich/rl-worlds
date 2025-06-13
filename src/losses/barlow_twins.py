@@ -48,15 +48,36 @@ class BarlowTwinsLoss(nn.Module):
         Returns:
             torch.Tensor: The Barlow Twins loss value.
         """
+        if z1.ndim != 2:
+            raise ValueError(f"Input tensor z1 must be 2D (batch_size, feature_dim). Got ndim={z1.ndim}")
+
         if z2 is None:
-            z2 = z1
+            # Auto-correlation case, z1 is used for both branches.
+            # Apply the batch size check for z1.
+            if z1.shape[0] < 2:
+                return torch.tensor(0.0, device=z1.device, dtype=z1.dtype)
+            z2 = z1 # z2 now refers to z1
+        else:
+            # z2 is provided. Ensure it also has the same shape and is 2D.
+            if z2.ndim != 2:
+                raise ValueError(f"Input tensor z2 must be 2D (batch_size, feature_dim). Got ndim={z2.ndim}")
+            if z1.shape != z2.shape:
+                raise ValueError(f"Input tensors z1 and z2 must have the same shape. Got {z1.shape} and {z2.shape}")
+            # If z1 and z2 are distinct, and *either* has batch_size < 2, std dev will be NaN.
+            # This case is less directly related to the vjepa2 issue which uses calculate_reg_terms
+            # or forward(z, None). For now, we focus on the single input case.
+            # A more general solution for distinct z1, z2 with small batch sizes might be needed
+            # if this loss is used in other contexts, but let's stick to the original problem's scope.
+            # The primary concern is when z1.std or z2.std (which is z1.std if z2 is None) becomes NaN.
+            if z1.shape[0] < 2: # This implies z2.shape[0] < 2 due to shape assertion
+                # This path is taken if z2 was not None, but z1's batch size is < 2.
+                # Both z1.std and z2.std would be NaN.
+                return torch.tensor(0.0, device=z1.device, dtype=z1.dtype)
 
-        assert z1.shape == z2.shape, "Input tensors z1 and z2 must have the same shape."
-        assert z1.ndim == 2, "Input tensors must be 2D (batch_size, feature_dim)."
-        batch_size, feature_dim = z1.shape
 
-        # 1. Normalize along the batch dimension (batchnorm-like)
-        # Each feature dimension should have mean 0 and std 1 over the batch.
+        batch_size, feature_dim = z1.shape # batch_size from z1
+
+        # Normalization (z1.std and z2.std will be NaN if their effective batch_size is 1)
         z1_norm = (z1 - z1.mean(dim=0, keepdim=True)) / \
             (z1.std(dim=0, keepdim=True) + self.eps)
         z2_norm = (z2 - z2.mean(dim=0, keepdim=True)) / \
@@ -97,6 +118,15 @@ class BarlowTwinsLoss(nn.Module):
         assert z.ndim == 2, "Input tensor must be 2D (batch_size, feature_dim)."
         batch_size, feature_dim = z.shape
 
+        if batch_size < 2:
+            # If batch size is less than 2, std dev is undefined or unstable (NaN for batch_size=1).
+            # Return zeros for all loss components.
+            # Ensure the zeros are on the same device as the input tensor.
+            zero_loss = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+            # BarlowTwins returns 3 values: total_loss, invariance_loss, weighted_redundancy_loss
+            return zero_loss, zero_loss, zero_loss
+
+        # Original calculations follow
         z_norm = (z - z.mean(dim=0, keepdim=True)) / \
             (z.std(dim=0, keepdim=True) + self.eps)
 
