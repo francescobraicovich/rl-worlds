@@ -48,6 +48,12 @@ def _train_validate_model_epoch(
         else:
             a_t_processed = a_t.float().to(device)
 
+        if batch_idx == 0 and epoch_num == 1:
+            print(f"Debug Devices ({model_name_log_prefix} - Train/Val Epoch):")
+            print(f"  s_t device: {s_t.device}")
+            print(f"  a_t_processed device: {a_t_processed.device}")
+            print(f"  model device (first param): {next(model.parameters()).device}")
+
         optimizer.zero_grad()
 
         current_loss_primary_item = 0
@@ -222,6 +228,18 @@ def _train_reward_mlp_epoch(
             else:
                 a_t_processed = a_t.float().to(device)
 
+            if batch_idx == 0 and epoch == 0: # epoch here is 0-indexed
+                print(f"Debug Devices ({model_name_log_prefix} - Reward MLP Epoch):")
+                print(f"  s_t device: {s_t.device}")
+                print(f"  a_t_processed device: {a_t_processed.device}")
+                # For r_t and s_t_plus_1, they are already on device from above
+                print(f"  r_t device: {r_t.device}")
+                print(f"  s_t_plus_1 device: {s_t_plus_1.device}")
+                print(f"  reward_mlp_model device (first param): {next(reward_mlp_model.parameters()).device}")
+                if base_model:
+                    print(f"  base_model device (first param): {next(base_model.parameters()).device}")
+
+
             optimizer_reward_mlp.zero_grad()
 
             input_to_reward_mlp = None
@@ -323,6 +341,15 @@ def _train_jepa_state_decoder(
                          a_t_processed = F.one_hot(a_t.long().view(-1), num_classes=action_dim).float().to(device)
                 else:
                     a_t_processed = a_t.float().to(device)
+
+            if batch_idx == 0 and epoch == 0: # epoch here is 0-indexed
+                print(f"Debug Devices (JEPA State Decoder Epoch):")
+                print(f"  s_t device: {s_t.device}")
+                print(f"  a_t_processed device: {a_t_processed.device}")
+                print(f"  s_t_plus_1 device: {s_t_plus_1.device}")
+                print(f"  jepa_decoder_model device (first param): {next(jepa_decoder_model.parameters()).device}")
+                if jepa_model:
+                    print(f"  jepa_model (base for decoder) device (first param): {next(jepa_model.parameters()).device}")
 
                 optimizer_jepa_decoder.zero_grad()
                 with torch.no_grad():

@@ -53,6 +53,7 @@ def initialize_models(config, action_dim, device, image_h_w, input_channels):
         decoder_patch_size=config.get('decoder_patch_size', global_patch_size)
     ).to(device)
     models['std_enc_dec'] = std_enc_dec
+    print(f"std_enc_dec model first param device: {next(models['std_enc_dec'].parameters()).device}")
 
     print(f"Initializing JEPA Model with {encoder_type.upper()} encoder...")
     jepa_model = JEPA(
@@ -69,6 +70,7 @@ def initialize_models(config, action_dim, device, image_h_w, input_channels):
         encoder_params=specific_encoder_params
     ).to(device)
     models['jepa'] = jepa_model
+    print(f"JEPA model first param device: {next(models['jepa'].parameters()).device}")
 
     reward_mlp_enc_dec = None
     if enc_dec_mlp_config.get('enabled', False):
@@ -89,6 +91,7 @@ def initialize_models(config, action_dim, device, image_h_w, input_channels):
             use_batch_norm=enc_dec_mlp_config.get('use_batch_norm', False)
         ).to(device)
         print(f"Encoder-Decoder Reward MLP: {reward_mlp_enc_dec}")
+        print(f"reward_mlp_enc_dec model first param device: {next(reward_mlp_enc_dec.parameters()).device}")
     models['reward_mlp_enc_dec'] = reward_mlp_enc_dec
 
     reward_mlp_jepa = None
@@ -102,6 +105,7 @@ def initialize_models(config, action_dim, device, image_h_w, input_channels):
             use_batch_norm=jepa_mlp_config.get('use_batch_norm', False)
         ).to(device)
         print(f"JEPA Reward MLP: {reward_mlp_jepa}")
+        print(f"reward_mlp_jepa model first param device: {next(reward_mlp_jepa.parameters()).device}")
     models['reward_mlp_jepa'] = reward_mlp_jepa
 
     # Initialize JEPA State Decoder
@@ -125,6 +129,7 @@ def initialize_models(config, action_dim, device, image_h_w, input_channels):
         ).to(device)
         models['jepa_decoder'] = jepa_decoder
         print(f"JEPA State Decoder: {jepa_decoder}")
+        print(f"jepa_decoder model first param device: {next(jepa_decoder.parameters()).device}")
     else:
         models['jepa_decoder'] = None
         print("JEPA State Decoder is disabled in the configuration.")
