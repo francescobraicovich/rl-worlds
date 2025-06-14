@@ -5,8 +5,8 @@ input_channels: 3 # Number of channels in the input image (e.g., 3 for RGB, 1 fo
 image_size: 64    # Target size (height and width) for processed images
 
 # Data Collection
-num_episodes_data_collection: 150 # Number of episodes to collect for the dataset
-max_steps_per_episode_data_collection: 400 # Max steps per episode during data collection
+num_episodes_data_collection: 200 # Number of episodes to collect for the dataset
+max_steps_per_episode_data_collection: 450 # Max steps per episode during data collection
 
 # Dataset Management
 dataset_dir: "datasets/"
@@ -19,15 +19,15 @@ load_model_path: "" # empty string means don't load, otherwise it's a path relat
 model_type_to_load: "" # options: "std_enc_dec", "jepa", or potentially others if the system supports more
 
 # Training Configuration
-num_epochs: 1
+num_epochs: 20
 batch_size: 64
 learning_rate: 0.0003
 learning_rate_jepa: 0.0003 # Can be different from the main learning_rate
 num_workers: 1 # For DataLoader
-log_interval: 100 # Log training progress every N batches
+log_interval: 50 # Log training progress every N batches
 
 # Encoder Configuration
-encoder_type: "cnn"  # Options: "vit", "cnn", "mlp"
+encoder_type: "vit"  # Options: "vit", "cnn", "mlp"
 # Global patch_size:
 # - Used by ViT encoder (it expects 'patch_size' in its specific params; train.py ensures this).
 # - Used as the default for 'decoder_patch_size' in StandardEncoderDecoder if not explicitly set there.
@@ -62,7 +62,7 @@ encoder_params:
 # Model-Specific Configurations
 
 # Shared Latent Dimension
-latent_dim: 64 # Output dimension of the encoder, input to predictor/decoder logic for JEPA/StandardEncoderDecoder
+latent_dim: 96 # Output dimension of the encoder, input to predictor/decoder logic for JEPA/StandardEncoderDecoder
 
 # Standard Encoder-Decoder Model
 action_emb_dim: 64      # Dimension for embedding actions
@@ -138,7 +138,7 @@ auxiliary_loss:
       eps: 0.00001        # Default DINOLoss epsilon
 
 early_stopping:
-  patience: 10 # Number of epochs to wait for improvement before stopping
+  patience: 6 # Number of epochs to wait for improvement before stopping
   delta: 0.001 # Minimum change in the monitored quantity to qualify as an improvement
   # Metric for Encoder/Decoder, e.g., "val_loss_enc_dec" or "val_accuracy_enc_dec"
   metric_enc_dec: "val_loss_enc_dec"
@@ -150,13 +150,13 @@ early_stopping:
 
 jepa_decoder_training:
   enabled: true # Set to true to enable training this decoder
-  num_epochs: 1
+  num_epochs: 30
   learning_rate: 0.0003
   checkpoint_path: "best_jepa_decoder.pth"
   validation_plot_dir: "validation_plots/" # New line
   # Add early stopping parameters similar to the main ones if desired
   early_stopping:
-    patience: 10
+    patience: 5
     delta: 0.001
     metric: "val_loss_jepa_decoder" # Example metric
 
@@ -168,7 +168,7 @@ training_options: # New section name, as 'training_configuration' is too generic
 ppo_agent:
   enabled: true # Master switch for using PPO for data collection
   learning_rate: 0.0003
-  total_train_timesteps: 20000 # Timesteps to train PPO before data collection
+  total_train_timesteps: 200000 # Timesteps to train PPO before data collection
   n_steps: 512       # PPO n_steps parameter (number of steps to run for each environment per update)
   batch_size: 64      # PPO batch_size parameter (minibatch size)
   n_epochs: 5        # PPO n_epochs parameter (number of epoch when optimizing the surrogate loss)
