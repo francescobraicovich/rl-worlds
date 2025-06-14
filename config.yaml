@@ -10,7 +10,7 @@ max_steps_per_episode_data_collection: 400 # Max steps per episode during data c
 
 # Dataset Management
 dataset_dir: "datasets/"
-load_dataset_path: "" # empty string means don't load, otherwise it's a path relative to dataset_dir
+load_dataset_path: "car_racing_v3.pkl" # empty string means don't load, otherwise it's a path relative to dataset_dir
 dataset_filename: "car_racing_v3.pkl"
 
 # Model Loading Configuration
@@ -19,15 +19,15 @@ load_model_path: "" # empty string means don't load, otherwise it's a path relat
 model_type_to_load: "" # options: "std_enc_dec", "jepa", or potentially others if the system supports more
 
 # Training Configuration
-num_epochs: 12
+num_epochs: 1
 batch_size: 64
 learning_rate: 0.0003
 learning_rate_jepa: 0.0003 # Can be different from the main learning_rate
-num_workers: 6 # For DataLoader
-log_interval: 100000 # Log training progress every N batches
+num_workers: 1 # For DataLoader
+log_interval: 100 # Log training progress every N batches
 
 # Encoder Configuration
-encoder_type: "vit"  # Options: "vit", "cnn", "mlp"
+encoder_type: "cnn"  # Options: "vit", "cnn", "mlp"
 # Global patch_size:
 # - Used by ViT encoder (it expects 'patch_size' in its specific params; train.py ensures this).
 # - Used as the default for 'decoder_patch_size' in StandardEncoderDecoder if not explicitly set there.
@@ -97,10 +97,11 @@ reward_predictors:
     enabled: true
     input_type: "flatten" # Assumes flattened decoded image from StandardEncoderDecoder
     hidden_dims: [128, 64]
+    num_epochs: 20
     activation: "relu"
     use_batch_norm: false
     learning_rate: 0.0003
-    log_interval: 10000
+    log_interval: 100
   jepa_reward_mlp:
     enabled: true
     # Input for JEPA's reward MLP will typically be the output of JEPA's encoder (target or online)
@@ -109,7 +110,7 @@ reward_predictors:
     activation: "relu"
     use_batch_norm: false
     learning_rate: 0.0003
-    log_interval: 100000
+    log_interval: 100
 
 # Legacy/Shared Transformer parameters (These are less critical if using encoder_params and specific decoder params above)
 # num_encoder_layers: 4 # Primarily for old ViT direct init, now effectively superseded by encoder_params.vit.depth
@@ -149,7 +150,7 @@ early_stopping:
 
 jepa_decoder_training:
   enabled: true # Set to true to enable training this decoder
-  num_epochs: 50
+  num_epochs: 1
   learning_rate: 0.0003
   checkpoint_path: "best_jepa_decoder.pth"
   validation_plot_dir: "validation_plots/" # New line
@@ -168,11 +169,18 @@ ppo_agent:
   enabled: true # Master switch for using PPO for data collection
   learning_rate: 0.0003
   total_train_timesteps: 20000 # Timesteps to train PPO before data collection
-  n_steps: 2048       # PPO n_steps parameter (number of steps to run for each environment per update)
+  n_steps: 512       # PPO n_steps parameter (number of steps to run for each environment per update)
   batch_size: 64      # PPO batch_size parameter (minibatch size)
-  n_epochs: 10        # PPO n_epochs parameter (number of epoch when optimizing the surrogate loss)
+  n_epochs: 5        # PPO n_epochs parameter (number of epoch when optimizing the surrogate loss)
   gamma: 0.99         # PPO gamma parameter (discount factor)
   gae_lambda: 0.95    # PPO gae_lambda parameter (factor for trade-off General Advantage Estimation)
   clip_range: 0.2     # PPO clip_range parameter (clipping parameter)
   additional_log_std_noise: 0.0 # New parameter
   policy_type: "CnnPolicy" # Policy type, e.g., "CnnPolicy" for image-based envs
+
+
+wandb:
+  project: "rl_worlds"
+  entity: null
+  run_name_prefix: "exp"
+  enabled: true

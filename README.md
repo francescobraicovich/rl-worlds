@@ -79,6 +79,37 @@ For detailed setup instructions, including environment-specific installations, p
 
 For a comprehensive explanation of all configuration options in `config.yaml` and details on the execution flow, refer to **[`docs/06_usage_guide.md`](docs/06_usage_guide.md)**.
 
+## Experiment Tracking with Weights & Biases
+
+This project integrates Weights & Biases (wandb) for experiment tracking, visualization, and management. Wandb helps you log metrics, configurations, and even model outputs during training runs.
+
+### Configuration
+
+To use wandb, you need to configure its settings in the `config.yaml` file under the `wandb` top-level key:
+
+```yaml
+wandb:
+  project: "my_ai_project"  # Your wandb project name
+  entity: null              # Your wandb entity (username or team name). Set to null or omit if logging to default entity.
+  run_name_prefix: "exp"    # A prefix for automatically generated run names
+  enabled: true             # Set to false to disable wandb logging
+```
+
+*   `project`: The name of the project in wandb where runs will be logged.
+*   `entity`: Your wandb username or team name. If you are working in a team, this will be your team's entity. If left as `null` or omitted, the run will be logged to your default wandb entity.
+*   `run_name_prefix`: A prefix used to generate run names automatically (e.g., "exp-YYYYMMDD-HHMMSS").
+*   `enabled`: Set this to `true` to enable wandb logging, or `false` to disable it.
+
+### Prerequisites
+
+*   **Wandb Account**: You need an account at [wandb.ai](https://wandb.ai).
+*   **Login**: If you specify an `entity` or want to ensure runs are associated with your account, you must be logged into wandb in your environment. You can do this by running:
+    ```bash
+    wandb login
+    ```
+    Follow the prompts to authenticate. If `enabled` is `true` but you are not logged in and no `entity` is specified, wandb might run in anonymous mode or prompt you to log in.
+
+
 ## Implemented Architectures
 
 This project provides implementations of the following world model architectures:

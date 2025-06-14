@@ -8,3 +8,4 @@ ale-py
 gym
 stable-baselines3
 stable-baselines3[extra]
+wandb

@@ -1,5 +1,7 @@
 import torch
 import os # For path joining and checking existence
+import wandb
+import time
 
 # Import functions from the new modules in the 'src' directory
 from src.utils.config_utils import load_config
@@ -13,6 +15,25 @@ from src.training_engine import run_training_epochs
 def main():
     # 1. Load Configuration
     config = load_config(config_path='config.yaml')
+
+    # Initialize wandb
+    wandb_config = config.get('wandb', {})
+    wandb_run = None
+    if wandb_config.get('enabled', False):
+        try:
+            wandb_run = wandb.init(
+                project=wandb_config.get('project'),
+                entity=wandb_config.get('entity'),
+                name=f"{wandb_config.get('run_name_prefix', 'exp')}-{time.strftime('%Y%m%d-%H%M%S')}",
+                config=config  # Log the entire experiment config
+            )
+            print("Weights & Biases initialized successfully.")
+        except Exception as e:
+            print(f"Error initializing Weights & Biases: {e}. Proceeding without W&B.")
+            wandb_run = None # Ensure wandb_run is None if init fails
+    else:
+        print("Weights & Biases is disabled in the configuration.")
+
 
     # 2. Setup Device
     device = torch.device(
@@ -103,7 +124,8 @@ def main():
         image_h_w=image_h_w,
         input_channels=input_channels,
         std_enc_dec_loaded_successfully=std_enc_dec_loaded_successfully, # Pass flag
-        jepa_loaded_successfully=jepa_model_loaded_successfully          # Pass flag
+        jepa_loaded_successfully=jepa_model_loaded_successfully,          # Pass flag
+        wandb_run=wandb_run # Pass wandb_run object
     )
 
     # 9. Post-Training: Load best models and set to eval mode
@@ -164,6 +186,10 @@ def main():
         print("Auxiliary loss function (if DINO) set to eval mode.")
 
     print("\nProcess complete. Relevant models are in eval mode.")
+
+    if wandb_run:
+        wandb_run.finish()
+        print("Weights & Biases run finished.")
 
 if __name__ == '__main__':
     main()

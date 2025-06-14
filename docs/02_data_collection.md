@@ -35,9 +35,9 @@ The script `src/utils/data_utils.py` contains the function `collect_random_episo
 
 The collected datasets are managed through functionalities within `src/utils/data_utils.py` and configured via `config.yaml`.
 
--   **Saving Datasets:** After data collection (either random or PPO-guided), the resulting training and validation datasets (instances of `ExperienceDataset`) are saved to disk as a pickle file. The directory for saving is specified by `dataset_dir` in `config.yaml`, and the filename is determined by `dataset_filename`. Metadata about the collection process (e.g., environment name, number of episodes, collection method) is also saved alongside the datasets.
+-   **Saving Datasets:** After data collection (either random or PPO-guided), the resulting training and validation datasets (instances of `ExperienceDataset`) are saved to disk using NumPy's compressed array format (`.npz`). Each dataset (training and validation) is stored with its components (states, actions, rewards, next_states) as separate arrays within the `.npz` file. The directory for saving is specified by `dataset_dir` in `config.yaml`, and the filename is determined by `dataset_filename`. Metadata about the collection process (e.g., environment name, number of episodes, collection method) is also saved within the same `.npz` file.
 
--   **Loading Datasets:** To reuse previously collected data and avoid redundant collection, the system can load datasets from disk. If `load_dataset_path` in `config.yaml` is set to a valid filename (relative to `dataset_dir`), the system will attempt to load this file. This allows for reproducibility and faster iteration during model development. The loading logic also checks for environment name mismatches between the loaded dataset and the current configuration.
+-   **Loading Datasets:** To reuse previously collected data and avoid redundant collection, the system can load datasets from disk. If `load_dataset_path` in `config.yaml` is set to a valid filename (relative to `dataset_dir`), the system will attempt to load this `.npz` file. This allows for reproducibility and faster iteration during model development. The loading logic also checks for environment name mismatches between the loaded dataset and the current configuration.
 
 -   **Configuration Parameters:** Key settings in `config.yaml` related to data collection include:
     -   `environment_name`: Specifies the Gymnasium environment to use.
@@ -48,5 +48,11 @@ The collected datasets are managed through functionalities within `src/utils/dat
     -   `dataset_filename`: The name of the file to save newly collected data.
     -   `ppo_agent`: A block containing configurations for the PPO agent if PPO-guided exploration is enabled (see above).
     -   `validation_split` (within `early_stopping` block but used by data utility): The proportion of collected episodes to be set aside for the validation set.
+
+-   **Episode Handling:** Data collection proceeds on a step-by-step basis. Only complete transitions (state, action, reward, next_state) are recorded. If an episode terminates or is truncated, the collection for that episode stops, ensuring that no partial transitions are stored. The final `next_state` in a transition is the state observed at the point of termination or truncation.
+
+-   **Data Shuffling:** To ensure robust training and prevent the model from learning spurious correlations from sequential data, two levels of shuffling are employed:
+    1.  *Episode Shuffling:* During data collection, the order of complete episodes is shuffled before they are aggregated and split into training and validation sets.
+    2.  *Transition Shuffling:* For the training dataset, the `DataLoader` is configured to shuffle the individual transitions at the beginning of each training epoch before forming batches.
 
 This structured approach to data collection and management ensures that our world models are trained on datasets that are appropriate for the research objectives, and that the process is configurable and reproducible.

@@ -14,37 +14,30 @@ from src.rl_agent import create_ppo_agent, train_ppo_agent
 
 class ExperienceDataset(Dataset):
     def __init__(self, states, actions, rewards, next_states, transform=None):
-        # Ensure states, actions, rewards, next_states are numpy arrays
-        self.states = states # Should be np.array
-        self.actions = actions # Should be np.array
-        self.rewards = rewards # Should be np.array
-        self.next_states = next_states # Should be np.array
+        self.states = states
+        self.actions = actions
+        self.rewards = rewards
+        self.next_states = next_states
         self.transform = transform
 
     def __len__(self):
-        # All arrays should have the same first dimension (number of samples)
-        if isinstance(self.states, np.ndarray):
-            return self.states.shape[0]
-        else: # Should not happen if constructor is used correctly
-            return 0
-
+        return len(self.states)
 
     def __getitem__(self, idx):
-        state = self.states[idx] # Accessing NumPy array
-        action = self.actions[idx] # Accessing NumPy array
-        reward = self.rewards[idx] # Accessing NumPy array
-        next_state = self.next_states[idx] # Accessing NumPy array
+        state = self.states[idx]
+        action = self.actions[idx]
+        reward = self.rewards[idx]
+        next_state = self.next_states[idx]
 
-        # State and next_state are expected to be images (e.g., HWC numpy arrays)
-        # The transform will handle conversion to PILImage and then ToTensor
         if self.transform:
             state = self.transform(state)
             next_state = self.transform(next_state)
 
-        # Convert action to tensor.
-        # Actions can be discrete (scalar or int array) or continuous (float array).
-        # Rewards are typically scalar floats.
-        action_tensor = torch.tensor(action, dtype=torch.float32) # Adjust dtype as needed, esp for discrete
+        # Convert action to tensor, ensure it's float for potential nn.Linear embedding
+        # Adjust dtype based on action type (discrete typically long, continuous float)
+        # For simplicity, let's assume actions will be made float.
+        # If discrete, they might be indices; ensure they are handled appropriately later (e.g. one-hot or embedding layer).
+        action_tensor = torch.tensor(action, dtype=torch.float32)
         reward_tensor = torch.tensor(reward, dtype=torch.float32)
 
         return state, action_tensor, reward_tensor, next_state
@@ -56,75 +49,84 @@ def collect_random_episodes(config, max_steps_per_episode, image_size, validatio
 
     # New configuration keys
     dataset_dir = config['dataset_dir']
-    load_dataset_filename = config['load_dataset_path'] # Filename or path relative to dataset_dir
-    save_dataset_filename = config['dataset_filename'] # Filename for saving new datasets
+    load_dataset_filename_config = config['load_dataset_path'] # Filename or path relative to dataset_dir
+    save_dataset_filename_config = config['dataset_filename'] # Filename for saving new datasets
 
     os.makedirs(dataset_dir, exist_ok=True)
 
+    # Determine save filename with .npz extension
+    save_file_name_with_ext = save_dataset_filename_config
+    if not save_file_name_with_ext.lower().endswith('.npz'):
+        save_file_name_with_ext = os.path.splitext(save_file_name_with_ext)[0] + '.npz'
+
+    # Determine load filename with .npz extension (if load_dataset_filename is provided)
+    load_file_name_with_ext = None
+    if load_dataset_filename_config:
+        load_file_name_with_ext = load_dataset_filename_config
+        if not load_file_name_with_ext.lower().endswith('.npz'):
+            load_file_name_with_ext = os.path.splitext(load_file_name_with_ext)[0] + '.npz'
+
     data_loaded_successfully = False
-    # Define preprocess transform here, as it's needed for both loading and new collection
-    preprocess = T.Compose([
-        T.ToPILImage(),
-        T.Resize(image_size),
-        T.ToTensor()
-    ])
-
-    if load_dataset_filename: # If not an empty string, attempt to load
-        load_base_name = load_dataset_filename
-        for ext in ['.pkl', '.npz']: # Remove known extensions to get a clean base name
-            if load_base_name.endswith(ext):
-                load_base_name = load_base_name[:-len(ext)]
-                break
-
-        meta_path = os.path.join(dataset_dir, f"{load_base_name}_meta.pkl")
-        train_npz_path = os.path.join(dataset_dir, f"{load_base_name}_train.npz")
-        val_npz_path = os.path.join(dataset_dir, f"{load_base_name}_val.npz")
-
-        if os.path.exists(meta_path):
-            print(f"Loading metadata from {meta_path}...")
+    if load_file_name_with_ext:
+        dataset_path_to_load = os.path.join(dataset_dir, load_file_name_with_ext)
+        if os.path.exists(dataset_path_to_load):
+            print(f"Loading dataset from {dataset_path_to_load}...")
             try:
-                with open(meta_path, 'rb') as f:
-                    metadata = pickle.load(f)
+                loaded_data = np.load(dataset_path_to_load, allow_pickle=True)
+
+                metadata_pickled_array = loaded_data['metadata']
+                if metadata_pickled_array.ndim == 0 or metadata_pickled_array.size == 1:
+                    metadata = pickle.loads(metadata_pickled_array.item())
+                else:
+                    raise ValueError("Metadata format error in .npz file.")
 
                 loaded_env_name = metadata.get('environment_name')
                 if loaded_env_name != env_name:
                     print(f"Error: Mismatch between loaded dataset environment ('{loaded_env_name}') and config environment ('{env_name}').")
                     raise ValueError("Environment mismatch in loaded dataset.")
 
-                print(f"Loading training data from {train_npz_path}...")
-                train_data_npz = np.load(train_npz_path)
-                loaded_train_states = train_data_npz['states']
-                loaded_train_actions = train_data_npz['actions']
-                loaded_train_rewards = train_data_npz['rewards']
-                loaded_train_next_states = train_data_npz['next_states']
-                train_dataset = ExperienceDataset(loaded_train_states, loaded_train_actions, loaded_train_rewards, loaded_train_next_states, transform=preprocess)
+                # For random collection, no specific collection_method check is strictly needed here,
+                # but you could add one if you want to differentiate between 'random' and 'ppo' loaded datasets.
 
-                loaded_val_dataset = None
-                if os.path.exists(val_npz_path):
-                    print(f"Loading validation data from {val_npz_path}...")
-                    val_data_npz = np.load(val_npz_path)
-                    if 'states' in val_data_npz and val_data_npz['states'].shape[0] > 0: # Check if val data is not empty
-                        loaded_val_states = val_data_npz['states']
-                        loaded_val_actions = val_data_npz['actions']
-                        loaded_val_rewards = val_data_npz['rewards']
-                        loaded_val_next_states = val_data_npz['next_states']
-                        validation_dataset = ExperienceDataset(loaded_val_states, loaded_val_actions, loaded_val_rewards, loaded_val_next_states, transform=preprocess)
-                    else:
-                        print("Validation data file found but appears empty. Creating an empty validation dataset.")
-                        validation_dataset = ExperienceDataset(np.array([]), np.array([]), np.array([]), np.array([]), transform=preprocess)
-                else:
-                    print(f"Validation data file {val_npz_path} not found. Creating an empty validation dataset.")
-                    validation_dataset = ExperienceDataset(np.array([]), np.array([]), np.array([]), np.array([]), transform=preprocess)
+                preprocess = T.Compose([
+                    T.ToPILImage(),
+                    T.Resize(image_size),
+                    T.ToTensor()
+                ])
 
-                print(f"Successfully loaded dataset for environment '{loaded_env_name}' with {metadata.get('num_episodes_collected', 'N/A')} episodes (from metadata).")
+                def get_list_from_npz(npz_file, key):
+                    if key not in npz_file or npz_file[key].size == 0:
+                        return []
+                    return list(npz_file[key])
+
+                train_states_loaded = get_list_from_npz(loaded_data, 'train_states')
+                train_actions_loaded = get_list_from_npz(loaded_data, 'train_actions')
+                train_rewards_loaded = get_list_from_npz(loaded_data, 'train_rewards')
+                train_next_states_loaded = get_list_from_npz(loaded_data, 'train_next_states')
+
+                val_states_loaded = get_list_from_npz(loaded_data, 'val_states')
+                val_actions_loaded = get_list_from_npz(loaded_data, 'val_actions')
+                val_rewards_loaded = get_list_from_npz(loaded_data, 'val_rewards')
+                val_next_states_loaded = get_list_from_npz(loaded_data, 'val_next_states')
+
+                loaded_train_dataset = ExperienceDataset(
+                    train_states_loaded, train_actions_loaded, train_rewards_loaded, train_next_states_loaded,
+                    transform=preprocess
+                )
+                loaded_val_dataset = ExperienceDataset(
+                    val_states_loaded, val_actions_loaded, val_rewards_loaded, val_next_states_loaded,
+                    transform=preprocess
+                )
+
+                print(f"Successfully loaded dataset for environment '{loaded_env_name}' ... from {dataset_path_to_load}.")
                 data_loaded_successfully = True
-                return train_dataset, validation_dataset
+                return loaded_train_dataset, loaded_val_dataset
             except Exception as e:
-                print(f"Error loading dataset parts (meta: {meta_path}, train: {train_npz_path}, val: {val_npz_path}): {e}. Proceeding to data collection.")
+                print(f"Error loading dataset from {dataset_path_to_load}: {e}. Proceeding to data collection.")
         else:
-            print(f"Warning: Metadata file {meta_path} not found. Proceeding to data collection.")
+            print(f"Warning: Dataset {dataset_path_to_load} not found. Proceeding to data collection.")
     else:
-        print("`load_dataset_path` is empty. Proceeding to data collection.")
+        print("`load_dataset_path` (or its .npz version) is effectively empty or not found. Proceeding to data collection.")
 
     # If data was not loaded, proceed with data collection
     print(f"Collecting data from environment: {env_name}")
@@ -146,232 +148,150 @@ def collect_random_episodes(config, max_steps_per_episode, image_size, validatio
                 f"Failed to create env '{env_name}' with render_mode=None: {e_none}. Trying without render_mode arg...")
             env = gym.make(env_name)  # Fallback
             print(
-                f"Successfully created env '{env_name}' with render_mode ('{env.render_mode if hasattr(env, 'render_mode') else 'unknown'}').")
+                f"Successfully created env '{env_name}' with default render_mode ('{env.render_mode if hasattr(env, 'render_mode') else 'unknown'}').")
 
-    # Determine observation shape from a sample observation
-    # This requires resetting the env and getting one observation.
-    _obs_sample, _ = env.reset()
-    if not (isinstance(_obs_sample, np.ndarray) and _obs_sample.dtype == np.uint8):
-        if env.render_mode == 'rgb_array':
-            _obs_sample = env.render()
-    if not (isinstance(_obs_sample, np.ndarray) and _obs_sample.ndim >=2): # Must be image like
-         env.close()
-         raise ValueError(f"Initial observation from environment {env_name} is not suitable for image processing. Shape: {_obs_sample.shape if hasattr(_obs_sample, 'shape') else 'N/A'}, dtype: {_obs_sample.dtype if hasattr(_obs_sample, 'dtype') else 'N/A'}")
-    obs_shape = _obs_sample.shape
+    all_episodes_raw_data = []  # Stores list of lists of (s,a,r,s') tuples
 
-    # Determine action shape and dtype
-    action_space = env.action_space
-    if isinstance(action_space, gym.spaces.Discrete):
-        action_shape = () # Scalar action
-        action_dtype = np.int_ # Default int type for discrete actions
-    elif isinstance(action_space, gym.spaces.Box):
-        action_shape = action_space.shape
-        action_dtype = action_space.dtype
-    else:
-        env.close()
-        raise TypeError(f"Unsupported action space type: {type(action_space)}")
-
-    max_total_transitions = num_episodes * max_steps_per_episode
-
-    # Pre-allocate NumPy arrays
-    all_states = np.zeros((max_total_transitions, *obs_shape), dtype=np.uint8)
-    all_next_states = np.zeros((max_total_transitions, *obs_shape), dtype=np.uint8)
-    # For action_shape that might be (), np.zeros needs it as (max_total_transitions,)
-    _act_shape_for_zeros = (max_total_transitions,) + action_shape if action_shape else (max_total_transitions,)
-    all_actions = np.zeros(_act_shape_for_zeros, dtype=action_dtype)
-    all_rewards = np.zeros(max_total_transitions, dtype=np.float32)
-    all_episode_done_flags = np.zeros(max_total_transitions, dtype=bool) # True if transition was the last in an episode
-
-    transition_counter = 0
-    actual_episodes_collected = 0
-
-    # preprocess is already defined above
+    preprocess = T.Compose([
+        T.ToPILImage(),
+        T.Resize(image_size),
+        T.ToTensor()
+    ])
 
     for episode_idx in range(num_episodes):
         current_state_img, info = env.reset()
-        initial_obs_is_uint8_image = isinstance(current_state_img, np.ndarray) and current_state_img.dtype == np.uint8
+        # Standardize image check after reset
+        # If the observation is not a uint8 numpy array, it might be a float array (like CartPole)
+        # or something else. Try to render if the env is in 'rgb_array' mode.
+        initial_obs_is_uint8_image = isinstance(
+            current_state_img, np.ndarray) and current_state_img.dtype == np.uint8
 
         if not initial_obs_is_uint8_image:
+            # If initial obs is not a uint8 image, and env is in 'rgb_array' mode, try to render.
             if env.render_mode == 'rgb_array':
-                current_state_img = env.render()
+                print(
+                    f"Warning: Initial observation for episode {episode_idx+1} is not uint8. Attempting render due to env.render_mode='rgb_array'. Original obs type: {type(current_state_img)}, dtype: {current_state_img.dtype if hasattr(current_state_img, 'dtype') else 'N/A'}")
+                current_state_img = env.render()  # This should now provide an image
                 if not (isinstance(current_state_img, np.ndarray) and current_state_img.dtype == np.uint8):
-                    print(f"Error: env.render() in rgb_array mode did not return a uint8 numpy array for episode {episode_idx+1}. Skipping episode.")
+                    print(
+                        f"Error: env.render() in rgb_array mode did not return a uint8 numpy array for episode {episode_idx+1}. State: {current_state_img}. Skipping episode.")
                     continue
             else:
-                print(f"Warning: Initial observation for episode {episode_idx+1} is not a uint8 image and env.render_mode is '{env.render_mode}'. Skipping episode.")
+                # If not uint8 and not in rgb_array mode, we can't process it as an image.
+                print(
+                    f"Warning: Initial observation for episode {episode_idx+1} is not a uint8 image and env.render_mode is '{env.render_mode}'. Cannot process as image. Skipping episode. Observation: {current_state_img}")
                 continue
 
-        if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2 and current_state_img.shape == obs_shape):
-            print(f"Skipping episode {episode_idx+1} due to unsuitable initial state shape. Expected {obs_shape}, got {current_state_img.shape if hasattr(current_state_img, 'shape') else 'N/A'}")
+        # After potential rendering, re-check if we have a valid image structure (at least 2D)
+        if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2):
+            print(
+                f"Skipping episode {episode_idx+1} due to unsuitable initial state after potential render. State: {current_state_img}")
             continue
 
+        episode_transitions = []
         terminated = False
         truncated = False
         step_count = 0
-
-        episode_has_transitions = False # Flag to track if any transitions were added for this episode
+        cumulative_reward_episode = 0.0  # Initialize cumulative reward
 
         while not (terminated or truncated) and step_count < max_steps_per_episode:
-            if transition_counter >= max_total_transitions:
-                print("Warning: Reached max_total_transitions. Stopping data collection early.")
-                # This break will exit the inner while loop for the current episode.
-                # The outer for loop for episodes will also need to be broken.
-                break
-
             action = env.action_space.sample()
-            next_state_img, reward, terminated, truncated, info = env.step(action)
-            next_obs_is_uint8_image = isinstance(next_state_img, np.ndarray) and next_state_img.dtype == np.uint8
+            next_state_img, reward, terminated, truncated, info = env.step(
+                action)
+
+            # Standardize image check for next_state
+            next_obs_is_uint8_image = isinstance(
+                next_state_img, np.ndarray) and next_state_img.dtype == np.uint8
 
             if not next_obs_is_uint8_image:
                 if env.render_mode == 'rgb_array':
+                    # print(f"Debug: Next state obs for ep {episode_idx+1}, step {step_count+1} is not uint8. Attempting render. Orig type: {type(next_state_img)}")
                     next_state_img = env.render()
                     if not (isinstance(next_state_img, np.ndarray) and next_state_img.dtype == np.uint8):
-                        print(f"Error: env.render() for next_state did not return uint8 array for ep {episode_idx+1}, step {step_count+1}. Skipping step.")
-                        # current_state_img remains the same, try next action from this state
+                        print(
+                            f"Error: env.render() for next_state in rgb_array mode did not return a uint8 numpy array for ep {episode_idx+1}, step {step_count+1}. State: {next_state_img}. Skipping step.")
                         step_count += 1
+                        if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2):
+                            break
+                        else:
+                            continue
+                else:
+                    print(
+                        f"Warning: Next state obs for ep {episode_idx+1}, step {step_count+1} is not uint8 and env.render_mode is '{env.render_mode}'. Cannot process as image. Skipping step. Obs: {next_state_img}")
+                    step_count += 1
+                    if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2):
+                        break
+                    else:
                         continue
 
-            # Ensure states are valid and have the expected shape
-            if not (isinstance(current_state_img, np.ndarray) and current_state_img.shape == obs_shape and
-                    isinstance(next_state_img, np.ndarray) and next_state_img.shape == obs_shape):
-                print(f"Warning: Skipping step in episode {episode_idx+1}, step {step_count+1} due to unsuitable state dimensions. Current: {current_state_img.shape if hasattr(current_state_img, 'shape') else 'N/A'}, Next: {next_state_img.shape if hasattr(next_state_img, 'shape') else 'N/A'}. Expected: {obs_shape}")
-                current_state_img = next_state_img # Try to recover with next_state_img
+            # Ensure both current and next states are valid image-like arrays after potential rendering
+            if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2 and
+                    isinstance(next_state_img, np.ndarray) and next_state_img.ndim >= 2):
+                print(f"Warning: Skipping step in episode {episode_idx+1}, step {step_count+1} due to unsuitable state dimensions after potential render. Current shape: {current_state_img.shape if hasattr(current_state_img, 'shape') else 'N/A'}, Next shape: {next_state_img.shape if hasattr(next_state_img, 'shape') else 'N/A'}")
+                # Try to recover with next_state_img if it's valid
+                current_state_img = next_state_img
                 step_count += 1
-                if not (isinstance(current_state_img, np.ndarray) and current_state_img.shape == obs_shape):
-                    print(f"Recovery failed, current_state_img is unsuitable. Breaking episode.")
-                    break # Break from while loop (current episode)
+                if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2):
+                    break  # If new current_state_img is also bad
                 else:
-                    continue # Try next step with the recovered current_state_img
+                    # Try next step with the (potentially problematic) next_state_img as current
+                    continue
 
-            all_states[transition_counter] = current_state_img
-            all_actions[transition_counter] = action
-            all_rewards[transition_counter] = reward
-            all_next_states[transition_counter] = next_state_img
-            all_episode_done_flags[transition_counter] = terminated or truncated
-
+            episode_transitions.append(
+                (current_state_img, action, reward, next_state_img))
             current_state_img = next_state_img
             step_count += 1
-            transition_counter += 1
-            episode_has_transitions = True
 
-        if episode_has_transitions: # Only increment if the episode contributed transitions
-            actual_episodes_collected += 1
-
-        print(f"Episode {episode_idx+1}/{num_episodes} finished after {step_count} steps. Total transitions collected: {transition_counter}")
-
-        if transition_counter >= max_total_transitions: # Check after episode finishes
-            print("Reached max_total_transitions. Stopping data collection.")
-            break # Break from outer for loop (episodes)
+        if episode_transitions:
+            all_episodes_raw_data.append(episode_transitions)
+        print(f"Episode {episode_idx+1}/{num_episodes} finished after {step_count} steps. Collected {len(episode_transitions)} transitions.")
 
     env.close()
 
-    if transition_counter == 0:
+    if not all_episodes_raw_data:
         print("No data collected. Returning empty datasets.")
-        # Ensure empty arrays have a dimension for shape[0] to work in ExperienceDataset
-        empty_states_arr = np.zeros((0, *obs_shape), dtype=np.uint8) if obs_shape else np.array([])
-        _empty_act_shape = (0,) + action_shape if action_shape else (0,)
-        empty_actions_arr = np.zeros(_empty_act_shape, dtype=action_dtype) if action_dtype else np.array([])
+        empty_dataset = ExperienceDataset([], [], [], [], transform=preprocess)
+        return empty_dataset, empty_dataset
 
-        empty_train_dataset = ExperienceDataset(empty_states_arr, empty_actions_arr, np.array([]), empty_states_arr, transform=preprocess)
-        empty_val_dataset = ExperienceDataset(empty_states_arr, empty_actions_arr, np.array([]), empty_states_arr, transform=preprocess)
-        return empty_train_dataset, empty_val_dataset
+    random.shuffle(all_episodes_raw_data)
 
-    # Trim arrays to actual number of collected transitions
-    final_states = all_states[:transition_counter]
-    final_actions = all_actions[:transition_counter]
-    final_rewards = all_rewards[:transition_counter]
-    final_next_states = all_next_states[:transition_counter]
-    final_done_flags = all_episode_done_flags[:transition_counter]
+    num_total_episodes = len(all_episodes_raw_data)
+    # Index for end of training set
+    split_idx = int((1.0 - validation_split_ratio) * num_total_episodes)
 
-    # --- Episode-preserving shuffle and split ---
-    episode_boundaries = np.where(final_done_flags)[0] + 1 # Indices *after* episode ends
-    episode_starts = np.concatenate(([0], episode_boundaries[:-1])) # Add 0 for the start of the first episode
+    train_episodes_list = all_episodes_raw_data[:split_idx]
+    val_episodes_list = all_episodes_raw_data[split_idx:]
 
-    episode_segments = [] # List of (start_idx, end_idx) tuples for each episode
-    for start, end in zip(episode_starts, episode_boundaries):
-        if end > start: # Ensure episode has at least one transition
-             episode_segments.append((start, end))
+    print(f"Total episodes collected: {num_total_episodes}")
+    print(
+        f"Splitting into {len(train_episodes_list)} training episodes and {len(val_episodes_list)} validation episodes.")
 
-    if not episode_segments: # Should be caught by transition_counter == 0, but as a safeguard
-        print("No valid episode segments found after processing. Returning empty datasets.")
-        empty_states_arr = np.zeros((0, *obs_shape), dtype=np.uint8)
-        _empty_act_shape = (0,) + action_shape if action_shape else (0,)
-        empty_actions_arr = np.zeros(_empty_act_shape, dtype=action_dtype)
-        empty_train_dataset = ExperienceDataset(empty_states_arr, empty_actions_arr, np.array([]), empty_states_arr, transform=preprocess)
-        empty_val_dataset = ExperienceDataset(empty_states_arr, empty_actions_arr, np.array([]), empty_states_arr, transform=preprocess)
-        return empty_train_dataset, empty_val_dataset
+    def create_dataset_from_episode_list(episode_list, transform_fn):
+        flat_states, flat_actions, flat_rewards, flat_next_states = [], [], [], []
+        for episode_data in episode_list:
+            for s, a, r, ns in episode_data:
+                flat_states.append(s)
+                flat_actions.append(a)
+                flat_rewards.append(r)
+                flat_next_states.append(ns)
 
-    random.shuffle(episode_segments)
+        # If flat_states is empty, ExperienceDataset will handle it (or should)
+        return ExperienceDataset(flat_states, flat_actions, flat_rewards, flat_next_states, transform=transform_fn)
 
-    num_total_actual_episodes = len(episode_segments)
-    split_idx_episodes = int((1.0 - validation_split_ratio) * num_total_actual_episodes)
-
-    train_episode_segments = episode_segments[:split_idx_episodes]
-    val_episode_segments = episode_segments[split_idx_episodes:]
-
-    print(f"Total actual episodes collected and processed: {num_total_actual_episodes}")
-    print(f"Splitting into {len(train_episode_segments)} training episodes and {len(val_episode_segments)} validation episodes.")
-
-    # Concatenate segments to form final train/val datasets
-    # This can be memory intensive if we copy all data again.
-    # A more efficient way is to create lists of indices for train/val and then use fancy indexing.
-
-    train_indices = np.concatenate([np.arange(start, end) for start, end in train_episode_segments] if train_episode_segments else [[]]).astype(int)
-    val_indices = np.concatenate([np.arange(start, end) for start, end in val_episode_segments] if val_episode_segments else [[]]).astype(int)
-
-    if len(train_indices) > 0:
-        train_s_np = final_states[train_indices]
-        train_a_np = final_actions[train_indices]
-        train_r_np = final_rewards[train_indices]
-        train_ns_np = final_next_states[train_indices]
-    else: # Create empty arrays with correct dimensions
-        train_s_np = np.zeros((0, *obs_shape), dtype=np.uint8)
-        _empty_act_shape_train = (0,) + action_shape if action_shape else (0,)
-        train_a_np = np.zeros(_empty_act_shape_train, dtype=action_dtype)
-        train_r_np = np.array([], dtype=np.float32)
-        train_ns_np = np.zeros((0, *obs_shape), dtype=np.uint8)
-
-    if len(val_indices) > 0:
-        val_s_np = final_states[val_indices]
-        val_a_np = final_actions[val_indices]
-        val_r_np = final_rewards[val_indices]
-        val_ns_np = final_next_states[val_indices]
-    else: # Create empty arrays with correct dimensions
-        val_s_np = np.zeros((0, *obs_shape), dtype=np.uint8)
-        _empty_act_shape_val = (0,) + action_shape if action_shape else (0,)
-        val_a_np = np.zeros(_empty_act_shape_val, dtype=action_dtype)
-        val_r_np = np.array([], dtype=np.float32)
-        val_ns_np = np.zeros((0, *obs_shape), dtype=np.uint8)
-
-    print(f"Total transitions collected: {transition_counter}")
-    # The create_dataset_from_episode_list function is no longer needed here,
-    # as train_s_np, train_a_np etc. are already the final numpy arrays.
-
-    train_dataset = ExperienceDataset(train_s_np, train_a_np, train_r_np, train_ns_np, transform=preprocess)
-    validation_dataset = ExperienceDataset(val_s_np, val_a_np, val_r_np, val_ns_np, transform=preprocess)
+    train_dataset = create_dataset_from_episode_list(
+        train_episodes_list, preprocess)
+    validation_dataset = create_dataset_from_episode_list(
+        val_episodes_list, preprocess)
 
     print(f"Training dataset: {len(train_dataset)} transitions.")
     print(f"Validation dataset: {len(validation_dataset)} transitions.")
 
     # Save the collected dataset if new data was collected
     if not data_loaded_successfully:
-        if transition_counter > 0: # Check if new data was actually collected (transition_counter > 0)
-            # num_episodes_collected in config is the target, actual_episodes_collected is what we got
-
-            save_base_name = save_dataset_filename
-            for ext in ['.pkl', '.npz']: # Remove known extensions
-                if save_base_name.endswith(ext):
-                    save_base_name = save_base_name[:-len(ext)]
-                    break
-
-            meta_save_path = os.path.join(dataset_dir, f"{save_base_name}_meta.pkl")
-            train_npz_save_path = os.path.join(dataset_dir, f"{save_base_name}_train.npz")
-            val_npz_save_path = os.path.join(dataset_dir, f"{save_base_name}_val.npz")
-
+        if all_episodes_raw_data: # Check if new data was actually collected
             metadata_to_save = {
                 'environment_name': env_name,
-                'num_episodes_collected': num_episodes, # Target num_episodes from config
-                'actual_episodes_collected': actual_episodes_collected, # Actual number of episodes that yielded transitions
+                'num_episodes_collected': config['num_episodes_data_collection'], # Or len(all_episodes_raw_data)
                 'image_size': image_size,
                 'max_steps_per_episode': max_steps_per_episode,
                 'validation_split_ratio': validation_split_ratio,
@@ -380,43 +300,43 @@ def collect_random_episodes(config, max_steps_per_episode, image_size, validatio
                 'collection_method': 'random'
             }
 
+            actual_save_path = os.path.join(dataset_dir, save_file_name_with_ext)
+
+            def get_np_array(data_list, is_object_array):
+                if not data_list:
+                    return np.array([], dtype=object) if is_object_array else np.array([])
+                return np.asarray(data_list, dtype=object) if is_object_array else np.asarray(data_list)
+
+            train_states_np = get_np_array(train_dataset.states, True)
+            train_actions_np = get_np_array(train_dataset.actions, False)
+            train_rewards_np = get_np_array(train_dataset.rewards, False)
+            train_next_states_np = get_np_array(train_dataset.next_states, True)
+
+            val_states_np = get_np_array(validation_dataset.states, True)
+            val_actions_np = get_np_array(validation_dataset.actions, False)
+            val_rewards_np = get_np_array(validation_dataset.rewards, False)
+            val_next_states_np = get_np_array(validation_dataset.next_states, True)
+
+            data_to_save_npz = {
+                'train_states': train_states_np,
+                'train_actions': train_actions_np,
+                'train_rewards': train_rewards_np,
+                'train_next_states': train_next_states_np,
+                'val_states': val_states_np,
+                'val_actions': val_actions_np,
+                'val_rewards': val_rewards_np,
+                'val_next_states': val_next_states_np,
+                'metadata': np.array([pickle.dumps(metadata_to_save)], dtype=object)
+            }
+
             try:
-                # Save metadata
-                with open(meta_save_path, 'wb') as f:
-                    pickle.dump(metadata_to_save, f)
-                print(f"Metadata saved to {meta_save_path}")
-
-                # Save training data
-                if len(train_dataset) > 0:
-                    np.savez_compressed(train_npz_save_path,
-                                        states=train_dataset.states,
-                                        actions=train_dataset.actions,
-                                        rewards=train_dataset.rewards,
-                                        next_states=train_dataset.next_states)
-                    print(f"Training data saved to {train_npz_save_path}")
-                else:
-                    # Save empty structure if train_dataset is empty
-                    np.savez_compressed(train_npz_save_path, states=np.array([]), actions=np.array([]), rewards=np.array([]), next_states=np.array([]))
-                    print(f"Training dataset is empty. Saved empty structure to {train_npz_save_path}")
-
-
-                # Save validation data
-                if len(validation_dataset) > 0:
-                    np.savez_compressed(val_npz_save_path,
-                                        states=validation_dataset.states,
-                                        actions=validation_dataset.actions,
-                                        rewards=validation_dataset.rewards,
-                                        next_states=validation_dataset.next_states)
-                    print(f"Validation data saved to {val_npz_save_path}")
-                else:
-                    # Save empty structure if val_dataset is empty
-                    np.savez_compressed(val_npz_save_path, states=np.array([]), actions=np.array([]), rewards=np.array([]), next_states=np.array([]))
-                    print(f"Validation dataset is empty. Saved empty structure to {val_npz_save_path}")
-
+                np.savez_compressed(actual_save_path, **data_to_save_npz)
+                print(f"Dataset saved to {actual_save_path}")
             except Exception as e:
-                print(f"Error saving dataset parts (meta: {meta_save_path}, train: {train_npz_save_path}, val: {val_npz_save_path}): {e}")
+                print(f"Error saving dataset to {actual_save_path}: {e}")
         else:
             print("No new data was collected, so dataset will not be saved.")
+
 
     return train_dataset, validation_dataset
 
@@ -426,74 +346,83 @@ def collect_ppo_episodes(config, max_steps_per_episode, image_size, validation_s
     num_episodes = config['num_episodes_data_collection']
 
     dataset_dir = config['dataset_dir']
-    load_dataset_filename = config['load_dataset_path']
-    save_dataset_filename = config['dataset_filename']
+    load_dataset_filename_config = config['load_dataset_path']
+    save_dataset_filename_config = config['dataset_filename']
 
     os.makedirs(dataset_dir, exist_ok=True)
 
+    # Determine save filename with .npz extension
+    save_file_name_with_ext = save_dataset_filename_config
+    if not save_file_name_with_ext.lower().endswith('.npz'):
+        save_file_name_with_ext = os.path.splitext(save_file_name_with_ext)[0] + '.npz'
+
+    # Determine load filename with .npz extension (if load_dataset_filename is provided)
+    load_file_name_with_ext = None
+    if load_dataset_filename_config:
+        load_file_name_with_ext = load_dataset_filename_config
+        if not load_file_name_with_ext.lower().endswith('.npz'):
+            load_file_name_with_ext = os.path.splitext(load_file_name_with_ext)[0] + '.npz'
+
     data_loaded_successfully = False
-    # Define preprocess transform here, as it's needed for both loading and new collection
-    preprocess = T.Compose([
-        T.ToPILImage(),
-        T.Resize(image_size),
-        T.ToTensor()
-    ])
-
-    if load_dataset_filename:
-        load_base_name = load_dataset_filename
-        for ext in ['.pkl', '.npz']: # Remove known extensions
-            if load_base_name.endswith(ext):
-                load_base_name = load_base_name[:-len(ext)]
-                break
-
-        meta_path = os.path.join(dataset_dir, f"{load_base_name}_meta.pkl")
-        train_npz_path = os.path.join(dataset_dir, f"{load_base_name}_train.npz")
-        val_npz_path = os.path.join(dataset_dir, f"{load_base_name}_val.npz")
-
-        if os.path.exists(meta_path):
-            print(f"Loading PPO metadata from {meta_path}...")
+    if load_file_name_with_ext:
+        dataset_path_to_load = os.path.join(dataset_dir, load_file_name_with_ext)
+        if os.path.exists(dataset_path_to_load):
+            print(f"Loading dataset from {dataset_path_to_load}...")
             try:
-                with open(meta_path, 'rb') as f:
-                    metadata = pickle.load(f)
+                loaded_data = np.load(dataset_path_to_load, allow_pickle=True)
+
+                metadata_pickled_array = loaded_data['metadata']
+                if metadata_pickled_array.ndim == 0 or metadata_pickled_array.size == 1:
+                    metadata = pickle.loads(metadata_pickled_array.item())
+                else:
+                    raise ValueError("Metadata format error in .npz file.")
 
                 loaded_env_name = metadata.get('environment_name')
                 if loaded_env_name != env_name:
-                    print(f"Error: Mismatch between loaded PPO dataset environment ('{loaded_env_name}') and config environment ('{env_name}').")
-                    raise ValueError("Environment mismatch in loaded PPO dataset.")
+                    print(f"Error: Mismatch between loaded dataset environment ('{loaded_env_name}') and config environment ('{env_name}').")
+                    raise ValueError("Environment mismatch in loaded dataset.")
 
-                if metadata.get('collection_method') == 'ppo':
-                    print(f"Loading PPO training data from {train_npz_path}...")
-                    train_data_npz = np.load(train_npz_path)
-                    train_dataset = ExperienceDataset(
-                        train_data_npz['states'], train_data_npz['actions'],
-                        train_data_npz['rewards'], train_data_npz['next_states'],
-                        transform=preprocess)
-
-                    validation_dataset = ExperienceDataset(np.array([]), np.array([]), np.array([]), np.array([]), transform=preprocess) # Default empty
-                    if os.path.exists(val_npz_path):
-                        print(f"Loading PPO validation data from {val_npz_path}...")
-                        val_data_npz = np.load(val_npz_path)
-                        if 'states' in val_data_npz and val_data_npz['states'].shape[0] > 0:
-                            validation_dataset = ExperienceDataset(
-                                val_data_npz['states'], val_data_npz['actions'],
-                                val_data_npz['rewards'], val_data_npz['next_states'],
-                                transform=preprocess)
-                        else:
-                            print("PPO validation data file found but appears empty.")
-                    else:
-                        print(f"PPO validation data file {val_npz_path} not found. Using empty validation dataset.")
-
-                    print(f"Successfully loaded PPO-collected dataset for environment '{loaded_env_name}' with {metadata.get('num_episodes_collected', 'N/A')} episodes (from metadata).")
-                    data_loaded_successfully = True
-                    return train_dataset, validation_dataset
+                if metadata.get('collection_method') != 'ppo':
+                    print(f"Warning: Loaded dataset from {dataset_path_to_load} was collected using '{metadata.get('collection_method', 'unknown')}' not 'ppo'. Proceeding to collect new data with PPO.")
                 else:
-                    print(f"Warning: Loaded dataset from {meta_path} was not collected using PPO (method: {metadata.get('collection_method', 'unknown')}). Proceeding to collect new data with PPO.")
+                    preprocess = T.Compose([
+                        T.ToPILImage(),
+                        T.Resize(image_size),
+                        T.ToTensor()
+                    ])
+
+                    def get_list_from_npz(npz_file, key):
+                        if key not in npz_file or npz_file[key].size == 0:
+                            return []
+                        return list(npz_file[key])
+
+                    train_states_loaded = get_list_from_npz(loaded_data, 'train_states')
+                    train_actions_loaded = get_list_from_npz(loaded_data, 'train_actions')
+                    train_rewards_loaded = get_list_from_npz(loaded_data, 'train_rewards')
+                    train_next_states_loaded = get_list_from_npz(loaded_data, 'train_next_states')
+
+                    val_states_loaded = get_list_from_npz(loaded_data, 'val_states')
+                    val_actions_loaded = get_list_from_npz(loaded_data, 'val_actions')
+                    val_rewards_loaded = get_list_from_npz(loaded_data, 'val_rewards')
+                    val_next_states_loaded = get_list_from_npz(loaded_data, 'val_next_states')
+
+                    loaded_train_dataset = ExperienceDataset(
+                        train_states_loaded, train_actions_loaded, train_rewards_loaded, train_next_states_loaded,
+                        transform=preprocess
+                    )
+                    loaded_val_dataset = ExperienceDataset(
+                        val_states_loaded, val_actions_loaded, val_rewards_loaded, val_next_states_loaded,
+                        transform=preprocess
+                    )
+                    print(f"Successfully loaded PPO-collected dataset for environment '{loaded_env_name}' ... from {dataset_path_to_load}.")
+                    data_loaded_successfully = True
+                    return loaded_train_dataset, loaded_val_dataset
             except Exception as e:
-                print(f"Error loading PPO dataset parts (meta: {meta_path}, train: {train_npz_path}, val: {val_npz_path}): {e}. Proceeding to PPO data collection.")
+                print(f"Error loading dataset from {dataset_path_to_load}: {e}. Proceeding to PPO data collection.")
         else:
-            print(f"Warning: PPO Metadata file {meta_path} not found. Proceeding to PPO data collection.")
+            print(f"Warning: Dataset {dataset_path_to_load} not found. Proceeding to PPO data collection.")
     else:
-        print("`load_dataset_path` is empty. Proceeding to PPO data collection.")
+        print("`load_dataset_path` (or its .npz version) is effectively empty or not found. Proceeding to PPO data collection.")
 
     print(f"Collecting data from environment: {env_name} using PPO agent.")
     try:
@@ -549,39 +478,12 @@ def collect_ppo_episodes(config, max_steps_per_episode, image_size, validation_s
     # as SB3 usually doesn't close the original envs passed to DummyVecEnv unless DummyVecEnv.close() is called,
     # which happens if ppo_agent.env.close() is called. `learn()` does not close it.
 
-    # Determine observation shape (must be done after env is created, and potentially PPO agent for obs space consistency)
-    _obs_sample, _ = env.reset() # Use the PPO-wrapped env for this if applicable, but here `env` is the original.
-    if not (isinstance(_obs_sample, np.ndarray) and _obs_sample.dtype == np.uint8):
-        if env.render_mode == 'rgb_array':
-            _obs_sample = env.render()
-    if not (isinstance(_obs_sample, np.ndarray) and _obs_sample.ndim >=2):
-         env.close()
-         raise ValueError(f"Initial PPO observation from environment {env_name} is not suitable. Shape: {_obs_sample.shape if hasattr(_obs_sample, 'shape') else 'N/A'}, dtype: {_obs_sample.dtype if hasattr(_obs_sample, 'dtype') else 'N/A'}")
-    obs_shape = _obs_sample.shape
-
-    action_space = env.action_space
-    if isinstance(action_space, gym.spaces.Discrete):
-        action_shape = ()
-        action_dtype = np.int_
-    elif isinstance(action_space, gym.spaces.Box):
-        action_shape = action_space.shape
-        action_dtype = action_space.dtype # Typically float32 for PPO continuous actions
-    else:
-        env.close()
-        raise TypeError(f"Unsupported action space type for PPO: {type(action_space)}")
-
-    max_total_transitions = num_episodes * max_steps_per_episode
-
-    all_states = np.zeros((max_total_transitions, *obs_shape), dtype=np.uint8)
-    all_next_states = np.zeros((max_total_transitions, *obs_shape), dtype=np.uint8)
-    _act_shape_for_zeros = (max_total_transitions,) + action_shape if action_shape else (max_total_transitions,)
-    all_actions = np.zeros(_act_shape_for_zeros, dtype=action_dtype)
-    all_rewards = np.zeros(max_total_transitions, dtype=np.float32)
-    all_episode_done_flags = np.zeros(max_total_transitions, dtype=bool)
-
-    transition_counter = 0
-    actual_episodes_collected = 0
-    # preprocess is already defined above
+    all_episodes_raw_data = []
+    preprocess = T.Compose([
+        T.ToPILImage(),
+        T.Resize(image_size),
+        T.ToTensor()
+    ])
 
     for episode_idx in range(num_episodes):
         current_state_img, info = env.reset()
@@ -591,35 +493,29 @@ def collect_ppo_episodes(config, max_steps_per_episode, image_size, validation_s
             if env.render_mode == 'rgb_array':
                 current_state_img = env.render()
                 if not (isinstance(current_state_img, np.ndarray) and current_state_img.dtype == np.uint8):
-                    print(f"Error: env.render() did not return uint8 array for PPO ep {episode_idx+1}. Skipping.")
+                    print(f"Error: env.render() did not return a uint8 numpy array for PPO ep {episode_idx+1}. Skipping.")
                     continue
             else:
-                print(f"Warning: Initial PPO obs for ep {episode_idx+1} not uint8 and env not 'rgb_array'. Skipping.")
+                print(f"Warning: Initial PPO obs for ep {episode_idx+1} not uint8 and env not in 'rgb_array' mode. Skipping. Obs: {current_state_img}")
                 continue
 
-        if not (isinstance(current_state_img, np.ndarray) and current_state_img.shape == obs_shape):
-            print(f"Skipping PPO episode {episode_idx+1} due to unsuitable initial state shape. Expected {obs_shape}, got {current_state_img.shape if hasattr(current_state_img, 'shape') else 'N/A'}")
+        if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2):
+            print(f"Skipping PPO episode {episode_idx+1} due to unsuitable initial state. State: {current_state_img}")
             continue
 
+        episode_transitions = []
         terminated = False
         truncated = False
         step_count = 0
-        cumulative_reward_episode = 0.0
-        episode_has_transitions = False
+        cumulative_reward_episode = 0.0  # Initialize cumulative reward
 
         while not (terminated or truncated) and step_count < max_steps_per_episode:
-            if transition_counter >= max_total_transitions:
-                print("Warning: Reached max_total_transitions during PPO collection. Stopping early.")
-                break
+            # Action selection by PPO agent
+            # current_state_img is HWC, uint8 numpy array. SB3 CnnPolicy expects this.
+            action, _ = ppo_agent.predict(current_state_img, deterministic=True) # Use deterministic for collection consistency
 
-            action_pred, _ = ppo_agent.predict(current_state_img, deterministic=True)
-            # Ensure action is in the correct format for storage (e.g. .item() for scalar discrete)
-            processed_action = action_pred
-            if isinstance(action_space, gym.spaces.Discrete): # Check original space
-                 processed_action = action_pred.item() # Convert numpy scalar to Python int if necessary for dtype
-
-            next_state_img, reward, terminated, truncated, info = env.step(action_pred) # Use original prediction for env.step
-            cumulative_reward_episode += reward
+            next_state_img, reward, terminated, truncated, info = env.step(action)
+            cumulative_reward_episode += reward  # Add reward to cumulative sum
             next_obs_is_uint8_image = isinstance(next_state_img, np.ndarray) and next_state_img.dtype == np.uint8
 
             if not next_obs_is_uint8_image:
@@ -627,122 +523,68 @@ def collect_ppo_episodes(config, max_steps_per_episode, image_size, validation_s
                     next_state_img = env.render()
                     if not (isinstance(next_state_img, np.ndarray) and next_state_img.dtype == np.uint8):
                         print(f"Error: env.render() for next_state (PPO) did not return uint8 array for ep {episode_idx+1}, step {step_count+1}. Skipping step.")
-                        step_count += 1; continue
+                        step_count += 1
+                        if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2): break
+                        else: continue
+                else:
+                    print(f"Warning: Next PPO obs for ep {episode_idx+1}, step {step_count+1} not uint8 and env not 'rgb_array'. Skipping step. Obs: {next_state_img}")
+                    step_count += 1
+                    if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2): break
+                    else: continue
 
-            if not (isinstance(current_state_img, np.ndarray) and current_state_img.shape == obs_shape and
-                    isinstance(next_state_img, np.ndarray) and next_state_img.shape == obs_shape):
-                print(f"Warning: Skipping PPO step in ep {episode_idx+1}, step {step_count+1} due to unsuitable state dims. Current: {current_state_img.shape if hasattr(current_state_img, 'shape') else 'N/A'}, Next: {next_state_img.shape if hasattr(next_state_img, 'shape') else 'N/A'}. Expected {obs_shape}")
-                current_state_img = next_state_img; step_count += 1
-                if not (isinstance(current_state_img, np.ndarray) and current_state_img.shape == obs_shape):
-                    print("Recovery failed for PPO step. Breaking episode.")
-                    break
+            if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2 and
+                    isinstance(next_state_img, np.ndarray) and next_state_img.ndim >= 2):
+                print(f"Warning: Skipping PPO step in ep {episode_idx+1}, step {step_count+1} due to unsuitable state dims. Current: {current_state_img.shape if hasattr(current_state_img, 'shape') else 'N/A'}, Next: {next_state_img.shape if hasattr(next_state_img, 'shape') else 'N/A'}")
+                current_state_img = next_state_img
+                step_count += 1
+                if not (isinstance(current_state_img, np.ndarray) and current_state_img.ndim >= 2): break
                 else: continue
 
-            all_states[transition_counter] = current_state_img
-            all_actions[transition_counter] = processed_action
-            all_rewards[transition_counter] = reward
-            all_next_states[transition_counter] = next_state_img
-            all_episode_done_flags[transition_counter] = terminated or truncated
-
+            episode_transitions.append((current_state_img, action.item() if isinstance(action, np.ndarray) and env.action_space.shape == () else action, reward, next_state_img))
             current_state_img = next_state_img
             step_count += 1
-            transition_counter += 1
-            episode_has_transitions = True
 
-        if episode_has_transitions:
-            actual_episodes_collected +=1
-        print(f"PPO Episode {episode_idx+1}/{num_episodes} finished after {step_count} steps. Cumulative Reward: {cumulative_reward_episode:.2f}. Total transitions: {transition_counter}")
-        if transition_counter >= max_total_transitions: break
+        if episode_transitions:
+            all_episodes_raw_data.append(episode_transitions)
+        print(f"PPO Episode {episode_idx+1}/{num_episodes} finished after {step_count} steps. Cumulative Reward: {cumulative_reward_episode:.2f}. Collected {len(episode_transitions)} transitions.")
 
-    env.close()
+    env.close() # Close the environment used for PPO collection
 
-    if transition_counter == 0:
+    if not all_episodes_raw_data:
         print("No data collected with PPO. Returning empty datasets.")
-        empty_states_arr = np.zeros((0, *obs_shape), dtype=np.uint8) if obs_shape else np.array([])
-        _empty_act_shape = (0,) + action_shape if action_shape else (0,)
-        empty_actions_arr = np.zeros(_empty_act_shape, dtype=action_dtype) if action_dtype else np.array([])
-        empty_train_dataset = ExperienceDataset(empty_states_arr, empty_actions_arr, np.array([]), empty_states_arr, transform=preprocess)
-        empty_val_dataset = ExperienceDataset(empty_states_arr, empty_actions_arr, np.array([]), empty_states_arr, transform=preprocess)
-        return empty_train_dataset, empty_val_dataset
+        empty_dataset = ExperienceDataset([], [], [], [], transform=preprocess)
+        return empty_dataset, empty_dataset
 
-    final_states = all_states[:transition_counter]
-    final_actions = all_actions[:transition_counter]
-    final_rewards = all_rewards[:transition_counter]
-    final_next_states = all_next_states[:transition_counter]
-    final_done_flags = all_episode_done_flags[:transition_counter]
+    random.shuffle(all_episodes_raw_data)
+    num_total_episodes = len(all_episodes_raw_data)
+    split_idx = int((1.0 - validation_split_ratio) * num_total_episodes)
+    train_episodes_list = all_episodes_raw_data[:split_idx]
+    val_episodes_list = all_episodes_raw_data[split_idx:]
 
-    episode_boundaries = np.where(final_done_flags)[0] + 1
-    episode_starts = np.concatenate(([0], episode_boundaries[:-1]))
-    episode_segments = [(start, end) for start, end in zip(episode_starts, episode_boundaries) if end > start]
+    print(f"Total PPO episodes collected: {num_total_episodes}")
+    print(f"Splitting into {len(train_episodes_list)} training episodes and {len(val_episodes_list)} validation episodes.")
 
-    if not episode_segments:
-        print("No valid PPO episode segments. Returning empty datasets.") # Should be caught by transition_counter check
-        empty_states_arr = np.zeros((0, *obs_shape), dtype=np.uint8)
-        _empty_act_shape = (0,) + action_shape if action_shape else (0,)
-        empty_actions_arr = np.zeros(_empty_act_shape, dtype=action_dtype)
-        empty_train_dataset = ExperienceDataset(empty_states_arr, empty_actions_arr, np.array([]), empty_states_arr, transform=preprocess)
-        empty_val_dataset = ExperienceDataset(empty_states_arr, empty_actions_arr, np.array([]), empty_states_arr, transform=preprocess)
-        return empty_train_dataset, empty_val_dataset
+    def create_dataset_from_episode_list(episode_list, transform_fn):
+        flat_states, flat_actions, flat_rewards, flat_next_states = [], [], [], []
+        for episode_data in episode_list:
+            for s, a, r, ns in episode_data:
+                flat_states.append(s)
+                flat_actions.append(a)
+                flat_rewards.append(r)
+                flat_next_states.append(ns)
+        return ExperienceDataset(flat_states, flat_actions, flat_rewards, flat_next_states, transform=transform_fn)
 
-    random.shuffle(episode_segments)
-    num_total_actual_episodes = len(episode_segments)
-    split_idx_episodes = int((1.0 - validation_split_ratio) * num_total_actual_episodes)
-    train_episode_segments = episode_segments[:split_idx_episodes]
-    val_episode_segments = episode_segments[split_idx_episodes:]
-
-    print(f"Total PPO actual episodes collected: {num_total_actual_episodes}")
-    print(f"Splitting into {len(train_episode_segments)} PPO training episodes and {len(val_episode_segments)} PPO validation episodes.")
-
-    train_indices = np.concatenate([np.arange(start, end) for start, end in train_episode_segments] if train_episode_segments else [[]]).astype(int)
-    val_indices = np.concatenate([np.arange(start, end) for start, end in val_episode_segments] if val_episode_segments else [[]]).astype(int)
-
-    train_s_np = np.zeros((0, *obs_shape), dtype=np.uint8)
-    _empty_act_shape_train = (0,) + action_shape if action_shape else (0,)
-    train_a_np = np.zeros(_empty_act_shape_train, dtype=action_dtype)
-    train_r_np = np.array([], dtype=np.float32)
-    train_ns_np = np.zeros((0, *obs_shape), dtype=np.uint8)
-
-    if len(train_indices) > 0:
-        train_s_np = final_states[train_indices]
-        train_a_np = final_actions[train_indices]
-        train_r_np = final_rewards[train_indices]
-        train_ns_np = final_next_states[train_indices]
-
-    val_s_np = np.zeros((0, *obs_shape), dtype=np.uint8)
-    _empty_act_shape_val = (0,) + action_shape if action_shape else (0,)
-    val_a_np = np.zeros(_empty_act_shape_val, dtype=action_dtype)
-    val_r_np = np.array([], dtype=np.float32)
-    val_ns_np = np.zeros((0, *obs_shape), dtype=np.uint8)
-
-    if len(val_indices) > 0:
-        val_s_np = final_states[val_indices]
-        val_a_np = final_actions[val_indices]
-        val_r_np = final_rewards[val_indices]
-        val_ns_np = final_next_states[val_indices]
-
-    train_dataset = ExperienceDataset(train_s_np, train_a_np, train_r_np, train_ns_np, transform=preprocess)
-    validation_dataset = ExperienceDataset(val_s_np, val_a_np, val_r_np, val_ns_np, transform=preprocess)
+    train_dataset = create_dataset_from_episode_list(train_episodes_list, preprocess)
+    validation_dataset = create_dataset_from_episode_list(val_episodes_list, preprocess)
 
     print(f"PPO Training dataset: {len(train_dataset)} transitions.")
     print(f"PPO Validation dataset: {len(validation_dataset)} transitions.")
 
     if not data_loaded_successfully:
-        if transition_counter > 0: # Check if new data was actually collected
-            num_episodes_collected_target = config['num_episodes_data_collection']
-            save_base_name = save_dataset_filename
-            for ext in ['.pkl', '.npz']: # Remove known extensions
-                if save_base_name.endswith(ext):
-                    save_base_name = save_base_name[:-len(ext)]
-                    break
-
-            meta_save_path = os.path.join(dataset_dir, f"{save_base_name}_meta.pkl")
-            train_npz_save_path = os.path.join(dataset_dir, f"{save_base_name}_train.npz")
-            val_npz_save_path = os.path.join(dataset_dir, f"{save_base_name}_val.npz")
-
+        if all_episodes_raw_data:
             metadata_to_save = {
                 'environment_name': env_name,
-                'num_episodes_collected': num_episodes_collected_target, # Target num_episodes from config
-                'actual_episodes_collected': actual_episodes_collected, # Actual number of episodes that yielded transitions
+                'num_episodes_collected': config['num_episodes_data_collection'],
                 'image_size': image_size,
                 'max_steps_per_episode': max_steps_per_episode,
                 'validation_split_ratio': validation_split_ratio,
@@ -752,38 +594,40 @@ def collect_ppo_episodes(config, max_steps_per_episode, image_size, validation_s
                 'ppo_config_params': ppo_specific_config
             }
 
+            actual_save_path = os.path.join(dataset_dir, save_file_name_with_ext)
+
+            def get_np_array(data_list, is_object_array):
+                if not data_list:
+                    return np.array([], dtype=object) if is_object_array else np.array([])
+                return np.asarray(data_list, dtype=object) if is_object_array else np.asarray(data_list)
+
+            train_states_np = get_np_array(train_dataset.states, True)
+            train_actions_np = get_np_array(train_dataset.actions, False)
+            train_rewards_np = get_np_array(train_dataset.rewards, False)
+            train_next_states_np = get_np_array(train_dataset.next_states, True)
+
+            val_states_np = get_np_array(validation_dataset.states, True)
+            val_actions_np = get_np_array(validation_dataset.actions, False)
+            val_rewards_np = get_np_array(validation_dataset.rewards, False)
+            val_next_states_np = get_np_array(validation_dataset.next_states, True)
+
+            data_to_save_npz = {
+                'train_states': train_states_np,
+                'train_actions': train_actions_np,
+                'train_rewards': train_rewards_np,
+                'train_next_states': train_next_states_np,
+                'val_states': val_states_np,
+                'val_actions': val_actions_np,
+                'val_rewards': val_rewards_np,
+                'val_next_states': val_next_states_np,
+                'metadata': np.array([pickle.dumps(metadata_to_save)], dtype=object)
+            }
+
             try:
-                # Save metadata
-                with open(meta_save_path, 'wb') as f:
-                    pickle.dump(metadata_to_save, f)
-                print(f"PPO metadata saved to {meta_save_path}")
-
-                # Save training data
-                if len(train_dataset) > 0:
-                    np.savez_compressed(train_npz_save_path,
-                                        states=train_dataset.states,
-                                        actions=train_dataset.actions,
-                                        rewards=train_dataset.rewards,
-                                        next_states=train_dataset.next_states)
-                    print(f"PPO training data saved to {train_npz_save_path}")
-                else:
-                    np.savez_compressed(train_npz_save_path, states=np.array([]), actions=np.array([]), rewards=np.array([]), next_states=np.array([]))
-                    print(f"PPO training dataset is empty. Saved empty structure to {train_npz_save_path}")
-
-                # Save validation data
-                if len(validation_dataset) > 0:
-                    np.savez_compressed(val_npz_save_path,
-                                        states=validation_dataset.states,
-                                        actions=validation_dataset.actions,
-                                        rewards=validation_dataset.rewards,
-                                        next_states=validation_dataset.next_states)
-                    print(f"PPO validation data saved to {val_npz_save_path}")
-                else:
-                    np.savez_compressed(val_npz_save_path, states=np.array([]), actions=np.array([]), rewards=np.array([]), next_states=np.array([]))
-                    print(f"PPO validation dataset is empty. Saved empty structure to {val_npz_save_path}")
-
+                np.savez_compressed(actual_save_path, **data_to_save_npz)
+                print(f"PPO collected dataset saved to {actual_save_path}")
             except Exception as e:
-                print(f"Error saving PPO dataset parts (meta: {meta_save_path}, train: {train_npz_save_path}, val: {val_npz_save_path}): {e}")
+                print(f"Error saving PPO dataset to {actual_save_path}: {e}")
         else:
             print("No new PPO data was collected, so dataset will not be saved.")
 
@@ -800,26 +644,32 @@ if __name__ == '__main__':
     try:
         # Attempt to use a known pixel-based environment
         try:
-            gym.make("PongNoFrameskip-v4")
-            test_env_name = "PongNoFrameskip-v4"
-            print("Using PongNoFrameskip-v4 for testing data collection.")
-        except gym.error.MissingEnvDependency:
-            print("PongNoFrameskip-v4 not available. Skipping data_utils.py example run.")
+            # Using CartPole-v1 and rendering it as an image substitute for Atari envs
+            gym.make("CartPole-v1", render_mode='rgb_array') # Ensure rgb_array for rendering
+            test_env_name = "CartPole-v1"
+            print("Using CartPole-v1 (rendered) for testing data collection.")
+        except Exception as e: # Catch any exception during env creation
+            print(f"Could not create CartPole-v1 for testing: {e}. Skipping data_utils.py example run.")
             test_env_name = None
 
+
         if test_env_name:
-            # Dummy config for testing
-            dummy_config = {
+            shared_dataset_filename = f"test_data_utils_{test_env_name.replace('/', '_')}.npz" # Unique name for test
+            dataset_test_dir = "datasets_test/" # Use a dedicated test dataset directory
+            os.makedirs(dataset_test_dir, exist_ok=True) # Ensure it exists
+
+            dummy_config_collect = {
                 'environment_name': test_env_name,
-                'num_episodes_data_collection': 5, # Small number for test
-                'load_dataset': False, # Test data collection and saving
-                'dataset_name': ''
+                'num_episodes_data_collection': 5,
+                'dataset_dir': dataset_test_dir,
+                'dataset_filename': shared_dataset_filename, # For saving
+                'load_dataset_path': "", # Don't load for collection test
+                'ppo_agent': { 'enabled': False }
             }
 
-            # Test case 1: Collect and save
-            print("\n--- Test Case 1: Collect and Save ---")
+            print("\n--- Test Case 1: Collect and Save (NPZ) ---")
             train_d, val_d = collect_random_episodes(
-                config=dummy_config,
+                config=dummy_config_collect,
                 max_steps_per_episode=50,
                 image_size=(64, 64),
                 validation_split_ratio=0.4
@@ -841,39 +691,23 @@ if __name__ == '__main__':
             else:
                 print("Validation dataset is empty.")
 
-            # Test case 2: Load the saved dataset
-            print("\n--- Test Case 2: Load Saved Dataset ---")
-            # For testing, we'll use the save_dataset_filename from the previous run.
-            # This means the dummy_config for loading needs to be updated.
-
-            # The filename used for saving in Test Case 1 will be based on the new logic if we were to run it with the modified code.
-            # However, the current test code saves with f"{env_name.replace('/', '_')}_{num_episodes_collected}.pkl"
-            # To make Test Case 2 work with the *current* test structure without modifying the test case logic itself too much now,
-            # we'll keep the old way of determining `saved_dataset_filename` for the *test only*.
-            # The actual function logic uses `config['dataset_filename']` for saving.
-
-            # This specific part of the test may need more robust updates if the goal is to test the new load/save names directly from config.
-            # For now, let's ensure the function itself is correct. The test will try to load what the *original* test code saved.
-
-            _test_case_saved_filename = f"{test_env_name.replace('/', '_')}_{dummy_config['num_episodes_data_collection']}.pkl"
-
             dummy_config_load = {
                 'environment_name': test_env_name,
-                'num_episodes_data_collection': dummy_config['num_episodes_data_collection'],
-                'dataset_dir': "datasets/", # Added to match new requirements
-                'load_dataset_path': _test_case_saved_filename, # What the old test case 1 would have saved
-                'dataset_filename': "test_data_save.pkl" # Name for saving if this run were to save
+                'num_episodes_data_collection': 0,
+                'dataset_dir': dataset_test_dir,
+                'load_dataset_path': shared_dataset_filename, # For loading
+                'dataset_filename': "", # Not saving
+                'ppo_agent': { 'enabled': False }
             }
 
-            # Check if the file actually exists before attempting to load
-            # The dataset_dir for test case 2 should also align with the new config.
-            dataset_file_path = os.path.join(dummy_config_load['dataset_dir'], dummy_config_load['load_dataset_path'])
-            if os.path.exists(dataset_file_path):
+            expected_file_path = os.path.join(dataset_test_dir, shared_dataset_filename)
+            if os.path.exists(expected_file_path):
+                print("\n--- Test Case 2: Load Saved Dataset (NPZ) ---")
                 train_d_loaded, val_d_loaded = collect_random_episodes(
-                    config=dummy_config_load, # Pass the updated dummy_config_load
-                    max_steps_per_episode=50, # These are not used when loading but function expects them
-                    image_size=(64, 64),    # Same here
-                    validation_split_ratio=0.4 # Same here
+                    config=dummy_config_load,
+                    max_steps_per_episode=50,
+                    image_size=(64, 64),
+                    validation_split_ratio=0.4
                 )
 
                 print(f"\n--- Loaded Training Dataset (Size: {len(train_d_loaded)}) ---")
@@ -881,133 +715,34 @@ if __name__ == '__main__':
                     # Basic check: compare sizes with originally collected data
                     assert len(train_d_loaded) == len(train_d), "Loaded train dataset size mismatch!"
                     print("Loaded training dataset size matches original.")
-                    # Deeper checks could involve comparing actual data points if necessary
                 else:
-                    print("Loaded training dataset is empty.")
+                    # If original train_d was also empty, this is fine.
+                    assert len(train_d) == 0, "Original training dataset was not empty but loaded one is."
+                    print("Loaded training dataset is empty (matches original).")
 
                 print(f"\n--- Loaded Validation Dataset (Size: {len(val_d_loaded)}) ---")
                 if len(val_d_loaded) > 0:
                     assert len(val_d_loaded) == len(val_d), "Loaded validation dataset size mismatch!"
                     print("Loaded validation dataset size matches original.")
                 else:
-                    print("Loaded validation dataset is empty.")
+                    # If original val_d was also empty, this is fine.
+                    assert len(val_d) == 0, "Original validation dataset was not empty but loaded one is."
+                    print("Loaded validation dataset is empty (matches original).")
+
+                # Add asserts to check dataset lengths more directly
+                if len(train_d) > 0 and len(train_d_loaded) > 0: # Redundant with above but good for clarity
+                    assert len(train_d) == len(train_d_loaded), "Loaded train dataset size mismatch!"
+                    print("Loaded training dataset size matches original.")
+                if len(val_d) > 0 and len(val_d_loaded) > 0: # Redundant
+                    assert len(val_d) == len(val_d_loaded), "Loaded validation dataset size mismatch!"
+                    print("Loaded validation dataset size matches original.")
+
             else:
-                print(f"Dataset file {dataset_file_path} not found for Test Case 2. Skipping loading test.")
+                print(f"\n--- Test Case 2: Skipped --- Dataset file {expected_file_path} not found. Test Case 1 might have failed to save.")
 
     except ImportError as e:
-        print(f"Import error, likely missing a dependency for the test environment: {e}")
+        print(f"Import error during example run: {e}")
     except Exception as e:
         print(f"An error occurred during the example run: {e}")
         import traceback
         traceback.print_exc()
-# Commenting out the old test code as per subtask, new tests are in tests/test_data_utils.py
-# if __name__ == '__main__':
-#     # Example usage:
-#     # Ensure you have a display server if using environments like CarRacing-v2 locally without headless mode.
-#     # For servers, use Xvfb: Xvfb :1 -screen 0 1024x768x24 &
-#     # export DISPLAY=:1
-
-#     print(f"Testing data collection with a sample environment...")
-#     try:
-#         # Attempt to use a known pixel-based environment
-#         try:
-#             gym.make("PongNoFrameskip-v4")
-#             test_env_name = "PongNoFrameskip-v4"
-#             print("Using PongNoFrameskip-v4 for testing data collection.")
-#         except gym.error.MissingEnvDependency:
-#             print("PongNoFrameskip-v4 not available. Skipping data_utils.py example run.")
-#             test_env_name = None
-
-#         if test_env_name:
-#             # Dummy config for testing
-#             dummy_config = {
-#                 'environment_name': test_env_name,
-#                 'num_episodes_data_collection': 5, # Small number for test
-#                 'load_dataset': False, # Test data collection and saving
-#                 'dataset_name': ''
-#             }
-
-#             # Test case 1: Collect and save
-#             print("\n--- Test Case 1: Collect and Save ---")
-#             train_d, val_d = collect_random_episodes(
-#                 config=dummy_config,
-#                 max_steps_per_episode=50,
-#                 image_size=(64, 64),
-#                 validation_split_ratio=0.4
-#             )
-
-#             print(f"\n--- Training Dataset (Size: {len(train_d)}) ---")
-#             if len(train_d) > 0:
-#                 train_dataloader = DataLoader(train_d, batch_size=4, shuffle=True)
-#                 s_batch, a_batch, r_batch, s_next_batch = next(iter(train_dataloader))
-#                 print(f"Training Sample batch shapes: States {s_batch.shape}, Actions {a_batch.shape}, Rewards {r_batch.shape}, Next States {s_next_batch.shape}")
-#             else:
-#                 print("Training dataset is empty.")
-
-#             print(f"\n--- Validation Dataset (Size: {len(val_d)}) ---")
-#             if len(val_d) > 0:
-#                 val_dataloader = DataLoader(val_d, batch_size=4, shuffle=False)
-#                 s_val_batch, a_val_batch, r_val_batch, s_next_val_batch = next(iter(val_dataloader))
-#                 print(f"Validation Sample batch shapes: States {s_val_batch.shape}, Actions {a_val_batch.shape}, Rewards {r_val_batch.shape}, Next States {s_next_val_batch.shape}")
-#             else:
-#                 print("Validation dataset is empty.")
-
-#             # Test case 2: Load the saved dataset
-#             print("\n--- Test Case 2: Load Saved Dataset ---")
-#             # For testing, we'll use the save_dataset_filename from the previous run.
-#             # This means the dummy_config for loading needs to be updated.
-
-#             # The filename used for saving in Test Case 1 will be based on the new logic if we were to run it with the modified code.
-#             # However, the current test code saves with f"{env_name.replace('/', '_')}_{num_episodes_collected}.pkl"
-#             # To make Test Case 2 work with the *current* test structure without modifying the test case logic itself too much now,
-#             # we'll keep the old way of determining `saved_dataset_filename` for the *test only*.
-#             # The actual function logic uses `config['dataset_filename']` for saving.
-
-#             # This specific part of the test may need more robust updates if the goal is to test the new load/save names directly from config.
-#             # For now, let's ensure the function itself is correct. The test will try to load what the *original* test code saved.
-
-#             _test_case_saved_filename = f"{test_env_name.replace('/', '_')}_{dummy_config['num_episodes_data_collection']}.pkl"
-
-#             dummy_config_load = {
-#                 'environment_name': test_env_name,
-#                 'num_episodes_data_collection': dummy_config['num_episodes_data_collection'],
-#                 'dataset_dir': "datasets/", # Added to match new requirements
-#                 'load_dataset_path': _test_case_saved_filename, # What the old test case 1 would have saved
-#                 'dataset_filename': "test_data_save.pkl" # Name for saving if this run were to save
-#             }
-
-#             # Check if the file actually exists before attempting to load
-#             # The dataset_dir for test case 2 should also align with the new config.
-#             dataset_file_path = os.path.join(dummy_config_load['dataset_dir'], dummy_config_load['load_dataset_path'])
-#             if os.path.exists(dataset_file_path):
-#                 train_d_loaded, val_d_loaded = collect_random_episodes(
-#                     config=dummy_config_load, # Pass the updated dummy_config_load
-#                     max_steps_per_episode=50, # These are not used when loading but function expects them
-#                     image_size=(64, 64),    # Same here
-#                     validation_split_ratio=0.4 # Same here
-#                 )
-
-#                 print(f"\n--- Loaded Training Dataset (Size: {len(train_d_loaded)}) ---")
-#                 if len(train_d_loaded) > 0:
-#                     # Basic check: compare sizes with originally collected data
-#                     assert len(train_d_loaded) == len(train_d), "Loaded train dataset size mismatch!"
-#                     print("Loaded training dataset size matches original.")
-#                     # Deeper checks could involve comparing actual data points if necessary
-#                 else:
-#                     print("Loaded training dataset is empty.")
-
-#                 print(f"\n--- Loaded Validation Dataset (Size: {len(val_d_loaded)}) ---")
-#                 if len(val_d_loaded) > 0:
-#                     assert len(val_d_loaded) == len(val_d), "Loaded validation dataset size mismatch!"
-#                     print("Loaded validation dataset size matches original.")
-#                 else:
-#                     print("Loaded validation dataset is empty.")
-#             else:
-#                 print(f"Dataset file {dataset_file_path} not found for Test Case 2. Skipping loading test.")
-
-#     except ImportError as e:
-#         print(f"Import error, likely missing a dependency for the test environment: {e}")
-#     except Exception as e:
-#         print(f"An error occurred during the example run: {e}")
-#         import traceback
-#         traceback.print_exc()

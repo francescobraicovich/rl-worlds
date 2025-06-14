@@ -36,12 +36,13 @@ def prepare_dataloaders(config, validation_split):
     if validation_split > 0 and len(val_dataset) == 0:
         print("Warning: Validation split is > 0 but no validation data was collected. Check dataset size and split ratio.")
 
+
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=config.get('batch_size', 32),
         shuffle=True,
         num_workers=config.get('num_workers', 4),
-        pin_memory=True
+        pin_memory=True if torch.cuda.is_available() else False
     )
 
     val_dataloader = None
@@ -51,7 +52,7 @@ def prepare_dataloaders(config, validation_split):
             batch_size=config.get('batch_size', 32),
             shuffle=False,
             num_workers=config.get('num_workers', 4),
-            pin_memory=True
+            pin_memory=True if torch.cuda.is_available() else False
         )
 
     return train_dataloader, val_dataloader
