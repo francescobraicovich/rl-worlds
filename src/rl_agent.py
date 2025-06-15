@@ -2,6 +2,7 @@
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.monitor import Monitor
 
 def create_ppo_agent(env, ppo_config: dict, device: str = 'mps'):
     """
@@ -103,7 +104,8 @@ if __name__ == '__main__':
                     test_env = gym.make(env_name_test, render_mode='rgb_array')
                 else:
                     test_env = gym.make(env_name_test)
-                print(f"Test environment '{env_name_test}' created successfully.")
+                test_env = Monitor(test_env) # Wrap with Monitor
+                print(f"Test environment '{env_name_test}' created successfully and wrapped with Monitor.")
             except Exception as e:
                 print(f"Could not create test environment '{env_name_test}'. Error: {e}")
                 print("Skipping rl_agent.py test.")
